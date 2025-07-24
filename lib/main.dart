@@ -1,11 +1,9 @@
-import 'dart:async';
-
-import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
-
-UUID serviceUUID = UUID.fromString("12345678-1234-5678-1234-567812345678");
-UUID characteristicUUID = UUID.fromString("87654321-4321-6789-4321-678987654321");
+import 'package:flutter/material.dart';
+import 'ble_central_service.dart';
+import 'ble_peripheral_service.dart';
+import 'gatt_definitions.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const BLEApp());
@@ -21,176 +19,179 @@ class BLEApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
-      home: const BLEHomePage(title: 'BLE Demo Home Page'),
+      home: const BLEHomePage(),
     );
   }
 }
 
 class BLEHomePage extends StatefulWidget {
-  const BLEHomePage({super.key, required this.title});
-
-  final String title;
+  const BLEHomePage({super.key});
 
   @override
   State<BLEHomePage> createState() => _BLEHomePageState();
 }
 
 class _BLEHomePageState extends State<BLEHomePage> {
-  final central = CentralManager();
-  final peripheral = PeripheralManager();
+  late final CentralManager centralManager;
+  late final PeripheralManager peripheralManager;
+  late final BLECentralService centralService;
+  late final BLEPeripheralService peripheralService;
+  late final GATTService gattService;
+  final textController = TextEditingController();
 
-  late GATTService gattService;
+  List<DiscoveredEventArgs> discoveredDevices = [];
+  Map<String, String> receivedTexts = {};
 
-  List<DiscoveredEventArgs> devices = [];
   bool advertisingIsOn = false;
   bool scanIsOn = false;
-
-  StreamSubscription<DiscoveredEventArgs>? _discoveredSubscription;
 
   @override
   void initState() {
     super.initState();
 
-    gattService = GATTService(
-      uuid: serviceUUID,
-      isPrimary: true,
-      includedServices: [],
-      characteristics: [
-        GATTCharacteristic.mutable(
-          uuid: characteristicUUID,
-          properties: [
-            GATTCharacteristicProperty.read,
-            GATTCharacteristicProperty.write,
-            GATTCharacteristicProperty.notify,
-          ],
-          permissions: [
-            GATTCharacteristicPermission.read,
-            GATTCharacteristicPermission.write,
-          ],
-          descriptors: [
-            GATTDescriptor.immutable(
-              uuid: UUID.fromString("2901"),
-              value: Uint8List.fromList("BLE Demo Characteristic".codeUnits),
-            ),
-          ],
-        ),
-      ],
-    );
+    requestPermissions();
 
-    _listenToAuthorization();
+    centralManager = CentralManager();
+    peripheralManager = PeripheralManager();
+    centralService = BLECentralService(centralManager);
+    peripheralService = BLEPeripheralService(peripheralManager);
+    gattService = createGattService();
 
-    // 1回だけlisten登録、重複防止のため
-    _discoveredSubscription = central.discovered.listen((result) {
-      if (!scanIsOn) return; // スキャンOFF時は無視
+    centralService.collectDiscoveredDeviceStream(
+      central: centralManager,
+      targetServiceUUID: serviceUUID, // 任意のUUID
+    ).listen((event) {
+      setState(() {
+        discoveredDevices.add(event);
+      });
+    });
+
+    centralService.notifiedStream.listen((event) {
+      final uuid = event.peripheral.uuid.toString();
+      final text = String.fromCharCodes(event.value);
 
       setState(() {
-        // UUIDで重複チェックしてから追加
-        if (!devices.any((d) => d.peripheral.uuid == result.peripheral.uuid)) {
-          devices.add(result);
-        }
+        receivedTexts[uuid] = text;
       });
+    });
+  }
+
+  Future<void> requestPermissions() async {
+    final statuses = await [
+      Permission.bluetooth,
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.bluetoothAdvertise,
+      Permission.locationWhenInUse,
+      Permission.location,
+    ].request();
+
+    // 必要なら結果のログも出せる
+    statuses.forEach((permission, status) {
+      debugPrint('$permission: $status');
     });
   }
 
   @override
   void dispose() {
-    _discoveredSubscription?.cancel();
+    textController.dispose();
     super.dispose();
-  }
-
-  Future<void> _listenToAuthorization() async {
-    central.stateChanged.listen((event) async {
-      if (event.state == BluetoothLowEnergyState.unauthorized) {
-        await central.authorize();
-      }
-    });
-
-    peripheral.stateChanged.listen((event) async {
-      if (event.state == BluetoothLowEnergyState.unauthorized) {
-        await peripheral.authorize();
-      }
-    });
-  }
-
-  Future<void> _startAdvertising() async {
-    await peripheral.addService(gattService);
-    await peripheral.startAdvertising(
-      Advertisement(
-        name: 'BLE_DEMO',
-        serviceUUIDs: [serviceUUID],
-      ),
-    );
-  }
-
-  void _advertising() async {
-    if (advertisingIsOn) {
-      await peripheral.stopAdvertising();
-      setState(() {
-        advertisingIsOn = false;
-      });
-      if(kDebugMode) {
-        print("Advertising stopped");
-      }
-    } else {
-      await _startAdvertising();
-      setState(() {
-        advertisingIsOn = true;
-      });
-    }
-  }
-
-  void _scanning() async {
-    if (scanIsOn) {
-      await central.stopDiscovery();
-      setState(() {
-        scanIsOn = false;
-      });
-      if(kDebugMode) {
-        print("Scanning stopped");
-      }
-    } else {
-      devices.clear();
-      await central.startDiscovery(
-          serviceUUIDs: [serviceUUID],
-      );
-      setState(() {
-        scanIsOn = true;
-      });
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        title: const Text("BLE Demo"),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title),
       ),
-      body: Center(
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
+          children: [
+            // アドバタイズ & スキャンボタン
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton(
+                  onPressed: () async {
+                    if (advertisingIsOn) {
+                      // 今ONならSTOPする
+                      await peripheralService.stopAdvertising();
+                    } else {
+                      // 今OFFならSTARTする
+                      await peripheralService.startAdvertising(
+                        Advertisement(
+                          name: 'BLE_DEMO',
+                          serviceUUIDs: [serviceUUID],
+                        ),
+                      );
+                    }
+                    setState(() {
+                      advertisingIsOn = !advertisingIsOn;
+                    });
+                  },
+                  child: Text(advertisingIsOn ? 'Stop Advertising' : 'Start Advertising'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (scanIsOn) {
+                      await centralService.stopScanning();
+                    } else {
+                      await centralService.startScanning();
+                    }
+                    // 状態反転
+                    setState(() {
+                      scanIsOn = !scanIsOn;
+                    });
+                  },
+                  child: Text(scanIsOn ? 'Stop Scanning' : 'Start Scanning'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            // 入力欄と送信ボタン
+            TextField(
+              controller: textController,
+              decoration: const InputDecoration(
+                labelText: '送信文字列',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
             ElevatedButton(
-                onPressed: _advertising,
-                child:
-                Text(advertisingIsOn ? 'Stop Advertising' : 'Start Advertising')),
-            ElevatedButton(
-                onPressed: _scanning,
-                child: Text(scanIsOn ? 'Stop Scanning' : 'Start Scanning')),
+              onPressed: () async {
+                await peripheralService.sendText(textController.text);
+              },
+              child: const Text("送信"),
+            ),
             const Divider(),
-            const Text("見つけたデバイス："),
+            const Text(
+              "見つけたデバイス：",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
             Expanded(
               child: ListView.builder(
-                itemCount: devices.length,
+                itemCount: discoveredDevices.length,
                 itemBuilder: (context, index) {
-                  final device = devices[index];
-                  return ListTile(
-                    title: Text(device.advertisement.name ?? '名前なし'),
-                    subtitle: Text(device.peripheral.uuid.toString()),
+                  final device = discoveredDevices[index].peripheral;
+                  final advertisement = discoveredDevices[index].advertisement;
+                  return Card(
+                    child: ListTile(
+                      title: Text(advertisement.name ?? '名前なし'),
+                      subtitle: Text(receivedTexts[device.uuid.toString()] ?? device.uuid.toString(),),
+                      trailing: ElevatedButton(
+                        onPressed: () async {
+                          await centralService.connectToDevice(device);
+                        },
+                        child: const Text('接続'),
+                      ),
+                    ),
                   );
                 },
               ),
-            ),
+            )
           ],
         ),
       ),
