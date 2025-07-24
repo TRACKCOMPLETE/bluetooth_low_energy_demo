@@ -194,13 +194,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         onPressed: () async {
                           final uuidStr = device.uuid.toString();
                           final isConnected = connectionStates[uuidStr] ?? false;
-
                           if (isConnected) {
                             await centralService.disconnectFromDevice(device);
                           } else {
                             await centralService.connectToDevice(device);
                           }
-
                           setState(() {
                             connectionStates[uuidStr] = !isConnected;
                           });
@@ -209,7 +207,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
                           (connectionStates[device.uuid.toString()] ?? false) ? '切断' : '接続',
                         ),
                       ),
-
                     ),
                   );
                 },

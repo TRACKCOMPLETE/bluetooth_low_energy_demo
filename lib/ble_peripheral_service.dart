@@ -69,10 +69,6 @@ class BLEPeripheralService {
     );
 
     for (final central in subscribedCentrals) {
-      await peripheralManager.notifyCharacteristic(central, notifyChara, value: value);
-    }
-
-    for (final central in subscribedCentrals) {
       try {
         await peripheralManager.notifyCharacteristic(central, notifyChara, value: value);
         debugPrint("📤 Notify送信: $text -> ${central.uuid}");
