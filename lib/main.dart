@@ -1,5 +1,5 @@
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide ConnectionState;
 import 'ble_central_service.dart';
 import 'ble_peripheral_service.dart';
 import 'gatt_definitions.dart';
@@ -37,10 +37,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
   late final BLECentralService centralService;
   late final BLEPeripheralService peripheralService;
   late final GATTService gattService;
-  final textController = TextEditingController();
 
+  final textController = TextEditingController();
   List<DiscoveredEventArgs> discoveredDevices = [];
   Map<String, String> receivedTexts = {};
+  Set<String> connectedDeviceUUIDs = {};
+  Map<String, bool> connectionStates = {}; // Peripheral UUID → 接続状態
 
   bool advertisingIsOn = false;
   bool scanIsOn = false;
@@ -48,7 +50,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
   @override
   void initState() {
     super.initState();
-
     requestPermissions();
 
     centralManager = CentralManager();
@@ -74,6 +75,18 @@ class _BLEHomePageState extends State<BLEHomePage> {
         receivedTexts[uuid] = text;
       });
     });
+
+    centralManager.connectionStateChanged.listen((event) {
+      final uuid = event.peripheral.uuid.toString();
+
+      setState(() {
+        if (event.state == ConnectionState.connected) {
+          connectedDeviceUUIDs.add(uuid);
+        } else if (event.state == ConnectionState.disconnected) {
+          connectedDeviceUUIDs.remove(uuid);
+        }
+      });
+    });
   }
 
   Future<void> requestPermissions() async {
@@ -86,7 +99,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
       Permission.location,
     ].request();
 
-    // 必要なら結果のログも出せる
     statuses.forEach((permission, status) {
       debugPrint('$permission: $status');
     });
@@ -109,17 +121,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // アドバタイズ & スキャンボタン
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton(
                   onPressed: () async {
                     if (advertisingIsOn) {
-                      // 今ONならSTOPする
                       await peripheralService.stopAdvertising();
                     } else {
-                      // 今OFFならSTARTする
                       await peripheralService.startAdvertising(
                         Advertisement(
                           name: 'BLE_DEMO',
@@ -183,10 +192,24 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       subtitle: Text(receivedTexts[device.uuid.toString()] ?? device.uuid.toString(),),
                       trailing: ElevatedButton(
                         onPressed: () async {
-                          await centralService.connectToDevice(device);
+                          final uuidStr = device.uuid.toString();
+                          final isConnected = connectionStates[uuidStr] ?? false;
+
+                          if (isConnected) {
+                            await centralService.disconnectFromDevice(device);
+                          } else {
+                            await centralService.connectToDevice(device);
+                          }
+
+                          setState(() {
+                            connectionStates[uuidStr] = !isConnected;
+                          });
                         },
-                        child: const Text('接続'),
+                        child: Text(
+                          (connectionStates[device.uuid.toString()] ?? false) ? '切断' : '接続',
+                        ),
                       ),
+
                     ),
                   );
                 },

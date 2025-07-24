@@ -8,10 +8,18 @@ class BLECentralService {
   final StreamController<GATTCharacteristicNotifiedEventArgs> _notifiedStreamController =
   StreamController.broadcast();
 
+  final Set<UUID> connectedDevices = {};
+
   BLECentralService(this.centralManager) {
-    // 一度だけ listen して、外部に中継
     centralManager.characteristicNotified.listen((event) {
       _notifiedStreamController.add(event);
+    });
+
+    centralManager.connectionStateChanged.listen((event) {
+      if (event.state == ConnectionState.disconnected) {
+        connectedDevices.remove(event.peripheral.uuid);
+        debugPrint("🔌 切断検知: ${event.peripheral.uuid}");
+      }
     });
   }
 
@@ -21,70 +29,91 @@ class BLECentralService {
   Future<void> startScanning() async {
     try {
       await centralManager.startDiscovery();
-      debugPrint("Started scanning for devices.");
+      debugPrint("🔍 スキャンを開始しました");
     } on PlatformException catch (e) {
-      debugPrint("PlatformException: ${e.message}");
+      debugPrint("⚠️ PlatformException（スキャン開始時）: ${e.message}");
     } catch (e) {
-      debugPrint("Unexpected error: $e");
+      debugPrint("⚠️ 予期しないエラー（スキャン開始時）: $e");
     }
   }
 
   Future<void> stopScanning() async {
     try {
       await centralManager.stopDiscovery();
-      debugPrint("Stopped scanning for devices.");
+      debugPrint("🛑 スキャンを停止しました");
     } on PlatformException catch (e) {
-      debugPrint("PlatformException: ${e.message}");
+      debugPrint("⚠️ PlatformException（スキャン停止時）: ${e.message}");
     } catch (e) {
-      debugPrint("Unexpected error: $e");
+      debugPrint("⚠️ 予期しないエラー（スキャン停止時）: $e");
     }
   }
 
   Future<void> connectToDevice(Peripheral peripheral) async {
     try {
-      // 接続処理（仮実装）
       await centralManager.connect(peripheral);
+      debugPrint("✅ デバイスに接続成功: ${peripheral.uuid}");
 
-      // オプション：接続後にサービス・キャラクタリスティック探索とか
       final services = await centralManager.discoverGATT(peripheral);
 
       for (final service in services) {
-        debugPrint("🔍 Service: ${service.uuid}");
+        debugPrint("🔧 サービス: ${service.uuid}");
         for (final characteristic in service.characteristics) {
-          debugPrint("🧬 Characteristic: ${characteristic.uuid}");
-          debugPrint("  ▶ Props: ${characteristic.properties}");
+          debugPrint("🧬 キャラクタリスティック: ${characteristic.uuid}");
+          debugPrint("  ▶ 特性: ${characteristic.properties}");
         }
+
         for (final characteristic in service.characteristics) {
           if (characteristic.properties.contains(GATTCharacteristicProperty.notify)) {
-            // Notify購読開始
             await centralManager.setCharacteristicNotifyState(
               peripheral,
               characteristic,
-              state: true, // Notifyを有効にする
+              state: true,
             );
+            debugPrint("📩 Notify購読を開始: ${characteristic.uuid}");
           }
         }
       }
-
-      if (kDebugMode) {
-        print("✅ 接続成功: ${peripheral.uuid}");
-      }
     } catch (e) {
-      if (kDebugMode) {
-        print("❌ 接続失敗: $e");
-      }
+      debugPrint("❌ デバイス接続に失敗: $e");
     }
+  }
+
+  Future<void> disconnectFromDevice(Peripheral peripheral) async {
+    try {
+      final services = await centralManager.discoverGATT(peripheral);
+
+      for (final service in services) {
+        for (final characteristic in service.characteristics) {
+          if (characteristic.properties.contains(GATTCharacteristicProperty.notify)) {
+            await centralManager.setCharacteristicNotifyState(
+              peripheral,
+              characteristic,
+              state: false,
+            );
+            debugPrint("📴 Notify購読を解除: ${characteristic.uuid}");
+          }
+        }
+      }
+      await centralManager.disconnect(peripheral);
+      connectedDevices.remove(peripheral.uuid);
+      debugPrint("👋 切断成功: ${peripheral.uuid}");
+    } catch (e) {
+      debugPrint("❌ 切断失敗: $e");
+    }
+  }
+
+  void dispose() {
+    _notifiedStreamController.close();
   }
 
   Stream<DiscoveredEventArgs> collectDiscoveredDeviceStream({
     required CentralManager central,
-    required UUID targetServiceUUID, // ← 追加：このUUIDを持ってるやつだけ通す
+    required UUID targetServiceUUID,
   }) {
     final seenIds = <UUID>{};
 
     return central.discovered.where((event) {
       final uuid = event.peripheral.uuid;
-
       final advertisedServices = event.advertisement.serviceUUIDs;
       final hasTargetService = advertisedServices.contains(targetServiceUUID);
 

@@ -6,8 +6,10 @@ import 'gatt_definitions.dart';
 class BLEPeripheralService {
   final PeripheralManager peripheralManager;
   late final GATTService gattService;
-
   final Set<Central> subscribedCentrals = {};
+  late final StreamSubscription _notifyStateSub;
+
+  bool _serviceAdded = false;
 
   BLEPeripheralService(this.peripheralManager) {
     gattService = createGattService();
@@ -16,26 +18,29 @@ class BLEPeripheralService {
 
   Future<void> startAdvertising(Advertisement advertisement) async {
     try {
-      await peripheralManager.addService(gattService);
-      debugPrint("✅ GATTサービス登録成功！");
+      if (!_serviceAdded) {
+        await peripheralManager.addService(gattService);
+        _serviceAdded = true;
+        debugPrint("✅ GATTサービス登録成功！");
+      }
     } catch (e) {
       debugPrint("❌ GATTサービス登録失敗: $e");
     }
 
     try {
       await peripheralManager.startAdvertising(advertisement);
-      debugPrint("Started advertising service: ${advertisement.serviceUUIDs}");
+      debugPrint("📢 アドバタイズ開始（サービスUUID: ${advertisement.serviceUUIDs}）");
     } catch (e) {
-      debugPrint("Error starting advertising: $e");
+      debugPrint("❌ アドバタイズの開始に失敗しました: $e");
     }
   }
 
   Future<void> stopAdvertising() async {
     try {
       await peripheralManager.stopAdvertising();
-      debugPrint("Stopped advertising.");
+      debugPrint("🛑 アドバタイズを停止しました");
     } catch (e) {
-      debugPrint("Error stopping advertising: $e");
+      debugPrint("❌ アドバタイズの停止に失敗しました: $e");
     }
   }
 
@@ -46,14 +51,18 @@ class BLEPeripheralService {
         debugPrint("✅追加: ${event.central.uuid}");
       } else {
         subscribedCentrals.removeWhere((c) => c.uuid == event.central.uuid);
+        debugPrint("🚫 通知の購読を解除した中央: ${event.central.uuid}");
       }
     });
   }
 
   Future<void> sendText(String text) async {
-    final value = Uint8List.fromList(text.codeUnits);
+    if (subscribedCentrals.isEmpty) {
+      debugPrint("⚠️ 送信先の中央がいません");
+      return;
+    }
 
-    // Notify対応のCharacteristicをちゃんと探す
+    final value = Uint8List.fromList(text.codeUnits);
     final notifyChara = gattService.characteristics.firstWhere(
           (c) => c.properties.contains(GATTCharacteristicProperty.notify),
       orElse: () => throw Exception("Notifyに対応したCharacteristicが見つかりません"),
@@ -63,6 +72,17 @@ class BLEPeripheralService {
       await peripheralManager.notifyCharacteristic(central, notifyChara, value: value);
     }
 
-    debugPrint("📤 Notify送信: $text");
+    for (final central in subscribedCentrals) {
+      try {
+        await peripheralManager.notifyCharacteristic(central, notifyChara, value: value);
+        debugPrint("📤 Notify送信: $text -> ${central.uuid}");
+      } catch (e) {
+        debugPrint("❌ Notify送信失敗: $e");
+      }
+    }
+  }
+
+  void dispose() {
+    _notifyStateSub.cancel();
   }
 }
